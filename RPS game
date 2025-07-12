@@ -1,0 +1,134 @@
+import discord
+from discord.ext import commands
+import random
+import time
+import google.generativeai as genai
+
+# Initialize bot
+bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
+bot.game_sessions = {}  # Stores all active games
+
+# Gemini AI setup (simplified)
+genai.configure(api_key='AIzaSyDl7FdrB8oIIBkf819T4ebzgoTjcjkRsSQ')  # Replace with your actual API key
+rps_model = genai.GenerativeModel('gemini-1.0-pro')  # Simple model for text generation
+last_request = 0  # For rate limiting
+
+@bot.event
+async def on_ready():
+    print(f'Bot logged in as {bot.user.name}')
+
+@bot.command(aliases=['start'])
+async def game(ctx):
+    """Start a new Rock-Paper-Scissors game with AI"""
+    user_id = str(ctx.author.id)
+    
+    bot.game_sessions[user_id] = {
+        'move_history': [],
+        'wins': 0,
+        'rounds_played': 0,
+        'streak': 0
+    }
+    
+    await ctx.send("🎮 New Rock-Paper-Scissors game started against AI! Type `!rps rock/paper/scissors`")
+
+@bot.command(aliases=['play', 'move'])
+async def rps(ctx, choice: str):
+    """Play Rock-Paper-Scissors with Gemini AI"""
+    global last_request
+    user_id = str(ctx.author.id)
+    choice = choice.lower()
+    
+    # Validation
+    if user_id not in bot.game_sessions:
+        await ctx.send("❌ Start a game first with `!game`")
+        return
+        
+    if choice not in ["rock", "paper", "scissors"]:
+        await ctx.send("❌ Please choose: rock, paper, or scissors")
+        return
+    
+    # Simple fallback AI (used if Gemini fails)
+    def simple_ai():
+        return random.choice(["rock", "paper", "scissors"])
+    
+    # Try Gemini AI first
+    try:
+        # Rate limiting (1 request per second)
+        if time.time() - last_request < 1:
+            raise Exception("Waiting between AI requests")
+            
+        history = bot.game_sessions[user_id]['move_history']
+        last_three = ', '.join(history[-3:]) if history else 'None'
+        
+        prompt = f"""Respond ONLY with 'rock', 'paper', or 'scissors' based on:
+        - Player's last 3 moves: {last_three}
+        - Current choice: {choice}
+        - Common patterns: humans often repeat winning moves
+        """
+        
+        response = rps_model.generate_content(prompt)
+        bot_choice = response.text.lower().strip()
+        last_request = time.time()
+        
+        # Validate Gemini's response
+        if bot_choice not in ["rock", "paper", "scissors"]:
+            raise ValueError("AI returned invalid choice")
+            
+        reason = "Used Gemini AI strategy"
+        
+    except Exception as e:
+        print(f"AI Error: {e}")
+        bot_choice = simple_ai()
+        reason = "Used random choice (AI failed)"
+    
+    # Game logic
+    game_data = bot.game_sessions[user_id]
+    
+    # Determine winner
+    if choice == bot_choice:
+        result = "tie"
+    elif (choice == "rock" and bot_choice == "scissors") or \
+         (choice == "paper" and bot_choice == "rock") or \
+         (choice == "scissors" and bot_choice == "paper"):
+        result = "win"
+        game_data['wins'] += 1
+    else:
+        result = "loss"
+    
+    # Update game state
+    game_data['move_history'].append(choice)
+    game_data['rounds_played'] += 1
+    
+    # Prepare response
+    emojis = {"rock": "🪨", "paper": "📄", "scissors": "✂️"}
+    outcome = {
+        "win": "You win! 🎉",
+        "loss": "I win! 😎", 
+        "tie": "It's a tie! 🎀"
+    }[result]
+    
+    await ctx.send(
+        f"**{ctx.author.mention} vs 🤖 Gemini AI**\n"
+        f"Your move: {choice.capitalize()} {emojis[choice]}\n" 
+        f"My move: {bot_choice.capitalize()} {emojis[bot_choice]}\n"
+        f"*{reason}*\n"
+        f"**{outcome}**\n"
+        f"Wins: {game_data['wins']}/{game_data['rounds_played']}"
+    )
+
+@bot.command()
+async def end(ctx):
+    """End your current game"""
+    user_id = str(ctx.author.id)
+    if user_id in bot.game_sessions:
+        stats = bot.game_sessions.pop(user_id)
+        win_rate = (stats['wins']/stats['rounds_played']*100) if stats['rounds_played'] > 0 else 0
+        await ctx.send(
+            f"🏁 Game ended!\n"
+            f"Rounds: {stats['rounds_played']}\n"
+            f"Wins: {stats['wins']} ({win_rate:.1f}%)"
+        )
+    else:
+        await ctx.send("❌ No active game to end!")
+
+bot.run('TOKEN') 
